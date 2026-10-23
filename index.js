@@ -86,7 +86,7 @@ function buildDeckText(decks, { format, minGames, totalCandidates }) {
     const wr = Number(d.winrate).toFixed(1);
     // 有国服叫法就用中文，没有就留英文原名 —— 宁可不翻，也不瞎翻
     const name = d.cnName || d.name;
-    lines.push(`${i + 1}. ${d.cn} · ${name} · 胜率 ${wr}% · ${nfmt(d.games)} 场`);
+    lines.push(`${i + 1}. ${d.cn} · ${name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);
   });
   lines.push('');
   lines.push('要哪一套的卡组代码，回我「第 3 套」或套牌名就行。');
@@ -136,6 +136,55 @@ function loadLastDecks(chatKey) {
   return hit;
 }
 
+/** 尘数后缀：" · 7,040 尘"；拿不到卡牌库时返回空串 */
+function dustSuffix(d) {
+  return Number.isFinite(d?.dust) && d.dust > 0 ? ` · ${nfmt(d.dust)} 尘` : '';
+}
+
+/** 问某职业时发的那条：列该职业今日几套，不带代码 */
+function buildClassText(hs, cls, decks, format) {
+  const label = FORMAT_CN[format] || format;
+  const cn = hs.CLASS_CN?.[cls] || cls;
+  const short = hs.CLASS_SHORT?.[cls] || cn;
+  const lines = [];
+  lines.push(`🃏 ${cn} · ${label}推荐 ${decks.length} 套`);
+  lines.push('钻石到传说 · 今日数据');
+  lines.push('');
+  decks.forEach((d, i) => {
+    const wr = Number(d.winrate).toFixed(1);
+    lines.push(`${i + 1}. ${d.cnName || d.name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);
+  });
+  lines.push('');
+  lines.push(`要哪一套的卡组代码，回我「${short} 1」或套牌名就行。`);
+  return lines.join('\n');
+}
+
+/** 中文序号转阿拉伯数字：「术士第二套」→「术士第2套」 */
+function cnNumToDigit(s) {
+  const M = { 一: '1', 二: '2', 三: '3', 四: '4', 五: '5', 六: '6', 七: '7', 八: '8', 九: '9', 十: '10' };
+  return String(s || '').replace(/第([一二三四五六七八九十])(?=套|个|号|$)/g, (m0, c) => `第${M[c]}`);
+}
+
+/** 用户在问某个职业吗？「法师」「术士推荐」「术 1」「DK第2套」都认。
+ *  返回 { cls } = 只想看该职业的推荐；{ cls, idx } = 想直接要该职业第 idx 套的代码。 */
+function matchClassCode(hs, raw) {
+  const q = cnNumToDigit(raw)
+    .replace(/\s+/g, '')
+    .replace(/[「」"'“”‘’]/g, '')
+    .replace(/模式|职业|套牌|卡组|推荐|有什么|有啥|有哪|哪套|给我|看看|的|套/g, '');
+  if (!q) return null;
+  const pairs = Object.entries(hs.CLASS_SHORT || {});
+  const hitName = (s) => pairs.find(([code, short]) => s === short || s === hs.CLASS_CN?.[code]);
+  const direct = hitName(q);
+  if (direct) return { cls: direct[0] };
+  const m = q.match(/^(.+?)(?:第)?(\d{1,2})$/);
+  if (m) {
+    const hit = hitName(m[1]);
+    if (hit) return { cls: hit[0], idx: Number(m[2]) };
+  }
+  return null;
+}
+
 /** 把用户的「第 3 套」「硬币贼」「术士」对到清单里的一行 */
 function matchDeck(decks, query) {
   const raw = String(query || '').trim();
@@ -170,7 +219,9 @@ export async function buildDeckExport({ hs, cd }, deck, format) {
   const gameType = fmt === 'wild' ? 'RANKED_WILD' : 'RANKED_STANDARD';
   const lines = [];
 
-  lines.push(`### ${deck.cnName || deck.name}`);
+  // 第一行带合成尘数（放在套牌名后面，不单独占行：游戏导入时 `###` 必须是第一行）
+  const dustTag = Number.isFinite(deck.dust) && deck.dust > 0 ? `（合成 ${nfmt(deck.dust)} 尘）` : '';
+  lines.push(`### ${deck.cnName || deck.name}${dustTag}`);
   lines.push(`# 职业：${hs.CLASS_CN?.[deck.cls] || deck.cn || '未知'}`);
   lines.push(`# 模式：${FORMAT_CN[fmt] || fmt}`);
   lines.push('#');
@@ -193,8 +244,17 @@ export async function buildDeckExport({ hs, cd }, deck, format) {
     lines.push('#');
   }
 
-  if (deck.code) {
-    lines.push(deck.code);
+  // 清单里只存名字（不然每次 @ 要抓三十多个页面），代码在用户真要这套时才抓一次
+  let code = deck.code || '';
+  if (!code && deck.shortid) {
+    try {
+      code = await hs.fetchDeckCode(deck.shortid);
+    } catch (e) {
+      log(`按需抓卡组代码失败：${e?.message ?? e}`);
+    }
+  }
+  if (code) {
+    lines.push(code);
   } else {
     lines.push('');
     lines.push('（这套没抓到卡组代码，可以去 HSReplay 按套牌名搜）');
@@ -247,7 +307,7 @@ export function setup(api) {
         return { content: 'status: error\n拿不到发送通道（ctx.sender / chatKey），这条没发出去。', isError: true };
       }
 
-      const { hs, rd } = await deps();
+      const { hs, rd, cd } = await deps();
 
       const format = String(args?.format || cfg.format || 'standard').toLowerCase() === 'wild' ? 'wild' : 'standard';
       const requested = Number(args?.count);
@@ -256,6 +316,13 @@ export function setup(api) {
       const minGames = Math.max(0, Number(cfg.minGames) || 0);
       const wantDecks = cfg.sendDecks !== false;
       const wantCharts = cfg.sendCharts !== false;
+
+      // 尘数要卡牌库（稀有度 → 尘）。首次约 2 秒、之后 4 毫秒；拿不到就省略尘数，不影响主流程
+      const cardDb = wantDecks ? await cd.loadCardDb().catch((e) => {
+        log(`卡牌库加载失败，尘数省略：${e?.message ?? e}`);
+        return null;
+      }) : null;
+      const dustOf = cardDb ? (list) => cd.dustOf(list, cardDb) : null;
 
       const canMedia = typeof sender.sendMedia === 'function';
       const canText = typeof sender.sendTextBatch === 'function';
@@ -268,7 +335,7 @@ export function setup(api) {
         wantCharts ? hs.fetchConstructedWinrates().catch((e) => ({ error: e?.message || String(e) })) : null,
         wantCharts ? hs.fetchArenaWinrates().catch((e) => ({ error: e?.message || String(e) })) : null,
         wantDecks
-          ? hs.fetchTopDecks({ format, count, minGames }).catch((e) => ({ error: e?.message || String(e) }))
+          ? hs.fetchTopDecks({ format, count, minGames, dustOf }).catch((e) => ({ error: e?.message || String(e) }))
           : null,
         hs.fetchSiteStats(),
       ]);
@@ -374,7 +441,7 @@ export function setup(api) {
       /* 3) 套牌清单 */
       if (hasDecks) {
         // 存一份清单，供「发某套代码」按序号 / 名字取用
-        saveLastDecks(chatKey, { format: deckRes.format, decks: deckRes.decks });
+        saveLastDecks(chatKey, { format: deckRes.format, decks: deckRes.decks, byClass: deckRes.byClass });
         const text = buildDeckText(deckRes.decks, {
           format: deckRes.format,
           minGames,
@@ -449,26 +516,81 @@ export function setup(api) {
         return { content: 'status: error\n拿不到发送通道（ctx.sender / chatKey），这条没发出去。', isError: true };
       }
 
-      const last = loadLastDecks(chatKey);
+      const { hs, cd } = await deps();
+      const raw = cnNumToDigit(String(args?.query || '').trim());
+
+      // 没缓存就现场抓一次（约 5 秒）：用户可能没等清单就随口问「法师推荐什么」
+      let last = loadLastDecks(chatKey);
       if (!last) {
-        return {
-          content: 'status: no-list\n这个会话最近 2 小时没发过「今日炉石」清单。'
-            + '先调 today-hearthstone__today 发一次清单，再问用户要哪套。',
-          isError: true,
-        };
+        try {
+          const cardDb = await cd.loadCardDb().catch(() => null);
+          const res = await hs.fetchTopDecks({
+            format: String(cfg.format || '') === 'wild' ? 'wild' : 'standard',
+            count: Math.max(3, Math.min(20, Number(cfg.deckCount) || 10)),
+            minGames: Math.max(0, Number(cfg.minGames) || 0),
+            dustOf: cardDb ? (list) => cd.dustOf(list, cardDb) : null,
+          });
+          last = { format: res.format, decks: res.decks, byClass: res.byClass, at: Date.now() };
+          saveLastDecks(chatKey, { format: last.format, decks: last.decks, byClass: last.byClass });
+          log('没有清单缓存，已现场抓取一次');
+        } catch (e) {
+          return {
+            content: 'status: no-list\n这个会话最近 2 小时没发过「今日炉石」清单，现场抓取也失败了：'
+              + `${String(e?.message ?? e).slice(0, 80)}。先调 today-hearthstone__today 发一次清单。`,
+            isError: true,
+          };
+        }
       }
 
-      const deck = matchDeck(last.decks, args?.query);
+      const clsHit = matchClassCode(hs, raw);
+
+      // ① 问某职业 → 列该职业今日几套（不带代码）
+      if (clsHit && !clsHit.idx) {
+        const list = Array.isArray(last?.byClass?.[clsHit.cls]) ? last.byClass[clsHit.cls] : [];
+        const cn = hs.CLASS_CN?.[clsHit.cls] || clsHit.cls;
+        if (!list.length) {
+          return {
+            content: `status: no-class\n缓存里没有${cn}的套牌（今日该职业样本不足）。`
+              + '可以调 today-hearthstone__today 重新抓一次。',
+            isError: true,
+          };
+        }
+        const text = buildClassText(hs, clsHit.cls, list, last.format);
+        try {
+          if (typeof sender.sendMedia === 'function') {
+            await sender.sendMedia(chatKey, [{ type: 'text', data: { text } }], { label: '今日炉石·职业推荐' });
+          } else {
+            await sender.sendTextBatch(chatKey, [text], {});
+          }
+          log(`已发出「${cn}」的 ${list.length} 套推荐`);
+          return {
+            content: `status: ok\n${cn}的 ${list.length} 套推荐已发出。`
+              + '用户若要其中某套的代码，再调一次本工具，query 填「职业名 + 序号」或套牌名。'
+              + '不要再用 send_message 复述，直接结束这一轮。',
+          };
+        } catch (e) {
+          const msg = String(e?.message ?? e).slice(0, 100);
+          log(`发职业推荐失败：${msg}`);
+          return { content: `status: error\n推荐清单没发出去：${msg}`, isError: true };
+        }
+      }
+
+      // ② 要某一套：「3」「第3套」「硬币贼」，或「法师 2」「DK第1套」
+      let deck = null;
+      if (clsHit?.idx) {
+        const list = Array.isArray(last?.byClass?.[clsHit.cls]) ? last.byClass[clsHit.cls] : [];
+        deck = list[clsHit.idx - 1] || null;
+      }
+      if (!deck) deck = matchDeck(last.decks, raw);
       if (!deck) {
         const brief = last.decks.map((d, i) => `${i + 1}.${d.cnName || d.name}`).join('、');
         return {
-          content: `status: not-found\n对不上「${String(args?.query || '').slice(0, 20)}」。`
-            + `当前清单：${brief}。问用户要第几套。`,
+          content: `status: not-found\n对不上「${raw.slice(0, 20)}」。`
+            + `当前清单：${brief}。问用户要第几套，或者问「某职业」看该职业的今日推荐。`,
           isError: true,
         };
       }
 
-      const { hs, cd } = await deps();
       const text = await buildDeckExport({ hs, cd }, deck, last.format);
       try {
         if (typeof sender.sendMedia === 'function') {

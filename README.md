@@ -3,8 +3,10 @@
 给 **QQ Agent** 用的炉石传说天梯情报技能。群里 @ 它说一句「今日炉石」，就把当天的天梯环境连图带表发出来，不用再翻 HSReplay。
 
 - 📊 **三张职业胜率卡片图**：标准 / 狂野 / 竞技场，中文职业短称 + 职业配色 + 按胜率降序排列
-- 🃏 **全职业范围胜率 Top10 套牌清单**：套牌名、职业、胜率、样本场数，一行一套不刷屏
-- 📋 **按需发单套卡组代码**：看到想玩的回一句「第 3 套」或「海盗战」，只回那一套的代码，方便长按复制
+- 🃏 **全职业范围胜率 Top10 套牌清单**：职业、套牌名、胜率、样本场数、**合成尘数**，一行一套不刷屏
+- 📋 **按需发单套（游戏内导出格式）**：回一句「第 3 套」或「海盗战」，只回那一套的中文牌表 + 卡组代码 + 尘数，粘进游戏直接导入
+- 🧙 **任意职业今日推荐**：问「法师有什么」「战士 2」，回该职业今日最强的三套
+- 💰 **合成尘数**：清单和导出格式都标整套合成成本，先看造价再决定合不合
 - 🇨🇳 **套牌中文名**：`Zoo Warlock` → 动物园术，`C'Thun Warlock` → 克苏恩控制术，新套牌自动回落英文原名
 - ⏱️ **清单缓存 2 小时**：同一会话追问代码不重复抓取
 
@@ -78,7 +80,9 @@
 | 套牌列表 | `GET /analytics/query/trending_decks_by_popularity/?GameType=RANKED_STANDARD&LeagueRankRange=DIAMOND_THROUGH_LEGEND&Region=ALL` |
 | 职业胜率 | `GET /analytics/query/player_class_performance_summary_v2/?LeagueRankRange=DIAMOND_THROUGH_LEGEND` |
 | 竞技场 | `GET /api/v1/arena/classes_stats/` |
-| 卡组代码 | `GET /decks/{shortid}/` 页面 SSR 里内嵌的 `AAE…` 串 |
+| 套牌名 | `GET /api/v1/archetypes/?hl=en`（776 条 archetype → 英文名，落盘缓存 24 小时） |
+| 卡组代码 | `GET /decks/{shortid}/` 页面 SSR 里内嵌的 `AAE…` 串（只在用户问到某一套时才抓） |
+| 卡牌中文名 | `GET api.hearthstonejson.com/v1/latest/zhCN/cards.collectible.json`（8328 张，落盘缓存 30 天） |
 
 口径：钻石到传说、全部区服、实时抓取不落库。
 
@@ -88,7 +92,7 @@
 
 **网络** —— 唯一出口是 `hsreplay.net`（HTTPS GET），即上表四个接口加套牌详情页。不带 cookie、不需要 API key、不需要代理，不向任何第三方上报数据。
 
-**文件** —— 只写 `data/today-hearthstone-last.json`（当前会话的清单缓存，2 小时过期，供「第 N 套代码」追问）；渲染卡片时会往系统临时目录写一个 HTML 和一张 PNG，用完立即删除。不读聊天记录、不读配置、不访问用户目录。
+**文件** —— 只写 `data/` 下这三个缓存：`today-hearthstone-last.json`（当前会话的清单，2 小时过期，供「第 N 套代码」追问）、`today-hearthstone-archetypes.json`（archetype 英文名映射，24 小时）、`today-hearthstone-cards-zhcn-v2.json`（中文卡牌库，30 天）。渲染卡片时会往系统临时目录写一个 HTML 和一张 PNG，用完立即删除。不读聊天记录、不读配置、不访问用户目录。
 
 **权限声明** —— `skill.json` 里的 `permissions: ["web_fetch"]` 与代码的实际行为一致。
 
@@ -101,7 +105,7 @@
 | `index.js` | 两个工具的实现、权限门（mentionOnly）、清单缓存、消息发送 |
 | `hsreplay.js` | 数据层：四个接口抓取、职业/套牌中文名、卡组代码提取 |
 | `render.js` | 卡片渲染：拼 HTML + Electron 离屏截图成 PNG |
-| `cards.js` | 中文卡牌库（dbfId → 中文名 + 费用），缓存 30 天；用于把套牌代码渲染成游戏内导出格式 |
+| `cards.js` | 中文卡牌库（dbfId → 中文名 + 费用 + 稀有度），缓存 30 天；用于中文牌表与合成尘数 |
 
 卡片图走 QQ Agent 既有的渲染管线：`BrowserWindow({ offscreen: true })` 加载临时 HTML → 量内容高度 → `capturePage().toPNG()`。渲染失败会自动退化成纯文字，消息不会整条失败。
 
@@ -117,6 +121,8 @@
 ## 维护注意
 
 - 改完 `hsreplay.js` / `render.js` 后必须 `POST /api/skills/reload`。这两个文件由 `index.js` 里的 `deps()` 用**动态 import + 时间戳**加载，不要改回静态 `import`：宿主 reload 时只给入口 `index.js` 加破缓存参数，静态 import 的依赖会命中 Node 的 ESM 模块缓存，改了也不生效（2026-10-23 踩过：改完中文名 reload 后消息里仍是旧英文）。
+- 套牌名的来源是 archetypes 接口（一次 776 条，约 10 秒），结果落在 `data/today-hearthstone-archetypes.json`，24 小时内不再请求。想强制刷新就删掉这个文件。
+- 单张尘数按官方分解规则：普 40 / 稀有 100 / 史诗 400 / 传说 1600，免费牌 0，写在 `cards.js` 的 `DUST_BY_RARITY`。
 - 套牌中文名在 `hsreplay.js` 的 `DECK_CN`，职业短称在 `CLASS_SHORT`。新扩展包上线出现新套牌时先显示英文原名，按 `'英文名': '中文名'` 加一行即可。
 - 译名按国服习惯人工判定，不以字面直译为准：例如 `Cannon Warrior` 字面是「火炮」，实际核心是火炮手衍生物反复开火 + 海盗协同，国服叫「海盗战」。
 

@@ -14,6 +14,10 @@
 //     直接用详情页里 Blizzard 官方生成的那串，保证可导入。
 //  4) 胜率排序必须带场数门槛：trending 里有 61 场的套牌，胜率再高也是噪声。
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { DATA_DIR } from '../../src/config.js';
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36';
 const BASE = 'https://hsreplay.net';
 
@@ -163,10 +167,64 @@ export async function fetchArenaWinrates() {
  * trending 每个职业只给 3 套（狂野常常只有 1 套），所以候选池约 33 套；
  * 先按场数门槛过滤掉噪声，再按胜率排序。
  */
-export async function fetchTopDecks({ format = 'standard', count = 10, minGames = 800 } = {}) {
+/** archetype id → 英文名。一次请求拿全部 776 条，常驻内存 1 小时。
+ *  用它给套牌起名，就不用为每套牌单独抓一次页面（那是 33 次请求 / 13 秒）。 */
+// archetypes 接口一次返回全部 776 条，但要 10 秒上下 —— 所以内存 + 磁盘两级缓存，
+// 进程重启或技能 reload 之后都能直接用，不用再等。
+const ARCH_FILE = path.join(DATA_DIR, 'today-hearthstone-archetypes.json');
+const ARCH_TTL_MS = 24 * 60 * 60 * 1000;
+let archetypeCache = null;
+let archetypeAt = 0;
+async function fetchArchetypeNames() {
+  if (archetypeCache && Date.now() - archetypeAt < ARCH_TTL_MS) return archetypeCache;
+
+  try {
+    const st = fs.statSync(ARCH_FILE);
+    const fresh = Date.now() - st.mtimeMs < ARCH_TTL_MS;
+    if (fresh) {
+      const j = JSON.parse(fs.readFileSync(ARCH_FILE, 'utf8'));
+      if (j?.names && Object.keys(j.names).length > 100) {
+        archetypeCache = new Map(Object.entries(j.names).map(([k, v]) => [Number(k), v]));
+        archetypeAt = st.mtimeMs;
+        return archetypeCache;
+      }
+    }
+  } catch {
+    // 没缓存 / 被改坏：走网络
+  }
+
+  const list = await getJson('/api/v1/archetypes/?hl=en');
+  const m = new Map();
+  for (const a of Array.isArray(list) ? list : []) {
+    if (a?.id != null && a.name) m.set(Number(a.id), String(a.name));
+  }
+  if (m.size > 100) {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(ARCH_FILE, JSON.stringify({ at: Date.now(), names: Object.fromEntries(m) }), 'utf8');
+    } catch {
+      // 落盘失败不影响本次使用
+    }
+  }
+  archetypeCache = m;
+  archetypeAt = Date.now();
+  return m;
+}
+
+/** 按需抓某一套的卡组代码（约 2 秒）。清单里不存代码，用户真要时才调这个。 */
+export async function fetchDeckCode(shortid) {
+  const page = await getText(`/decks/${shortid}/`, { timeoutMs: 15000 });
+  return (page.match(/AAE[A-Za-z0-9+/]{20,}={0,2}/) || [])[0] || '';
+}
+
+export async function fetchTopDecks({ format = 'standard', count = 10, minGames = 800, dustOf = null } = {}) {
   const gameType = format === 'wild' ? 'RANKED_WILD' : 'RANKED_STANDARD';
   const qs = `GameType=${gameType}&LeagueRankRange=DIAMOND_THROUGH_LEGEND&Region=ALL`;
-  const j = await getJson(`/analytics/query/trending_decks_by_popularity/?${qs}`);
+  // archetypes 一次就能拿到全部套牌名；抓不到也不影响主流程，缺失的名字后面单独补
+  const [j, archNames] = await Promise.all([
+    getJson(`/analytics/query/trending_decks_by_popularity/?${qs}`),
+    fetchArchetypeNames().catch(() => new Map()),
+  ]);
   const data = j?.series?.data || {};
 
   const pool = [];
@@ -177,7 +235,7 @@ export async function fetchTopDecks({ format = 'standard', count = 10, minGames 
       const games = Number(d.total_games) || 0;
       const winrate = Number(d.win_rate);
       if (!Number.isFinite(winrate)) continue;
-      if (minGames > 0 && games < minGames) continue;
+      // 这里不再按 minGames 过滤：全职业那套数据要留给「问某职业推荐什么」用
       pool.push({
         shortid: String(d.shortid),
         cls,
@@ -195,53 +253,85 @@ export async function fetchTopDecks({ format = 'standard', count = 10, minGames 
   }
 
   if (!pool.length) {
-    throw new Error(`没有拿到符合条件的套牌（场数门槛 ${minGames} 场，可调低）`);
+    throw new Error('没有拿到今日套牌数据，稍后再试');
   }
 
-  // 同一套牌（shortid）只留一次；不同代码的同类套牌都保留，让用户自己挑
+  // 同一套牌（shortid）只留一次
   const seen = new Set();
   const uniq = pool.filter((d) => (seen.has(d.shortid) ? false : (seen.add(d.shortid), true)));
-  uniq.sort((a, b) => b.winrate - a.winrate || b.games - a.games);
-  // 候选池要比目标数量大：同名套牌（比如 3 套 C'Thun Demon Hunter）后面还要去重，
-  // 池子刚好等于 count 的话，去完就不够数了。
-  const poolSize = Math.max(1, Math.min(20, Math.max(count * 2, count + 4)));
-  const picked = uniq.slice(0, poolSize);
 
-  // 逐个补套牌名 + 卡组代码（并发 4，失败不影响其它套）
-  const detailed = await mapLimit(picked, 4, async (deck) => {
-    const fallbackName = `套牌 ${deck.shortid.slice(0, 6)}`;
-    try {
-      const page = await getText(`/decks/${deck.shortid}/`, { timeoutMs: 15000 });
-      const title = decodeEntities((page.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '')
-        .replace(/\s*[-|]\s*HSReplay\.net\s*$/i, '');
-      const code = (page.match(/AAE[A-Za-z0-9+/]{20,}={0,2}/) || [])[0] || '';
-      return { ...deck, name: title || fallbackName, cnName: deckCn(title || ''), code };
-    } catch {
-      // 失败项给个带 shortid 的唯一名字：不进同名去重，否则所有失败项会被合并成一套
-      return { ...deck, name: fallbackName, cnName: '', code: '' };
-    }
-  });
+  // 套牌名直接从 archetypes 映射拿 —— 11 个职业 × 3 套全都有名字，不用挨个抓页面。
+  // 卡组代码也不抓：清单里本来就不显示代码，用户真要那套时再 fetchDeckCode 按需抓（约 2 秒）。
+  let detailed = uniq.map((d) => ({
+    ...d,
+    name: (d.archetypeId != null && archNames.get(Number(d.archetypeId))) || '',
+    code: '',
+  }));
 
-  // 同名归并：每个名字只留场数最多的一套当代表，不够数再按胜率补同名落选套牌。
-  // 目的：避免 Top10 里塞进 3 套 C'Thun Demon Hunter 这种纯重复，信息密度太低。
-  const groups = new Map();
+  // archetype_id 为空（新构筑还没来得及归类）的少数几套，抓页面补个名字
+  const needName = detailed.filter((d) => !d.name);
+  if (needName.length) {
+    const fixed = await mapLimit(needName, 6, async (deck) => {
+      const fallbackName = `套牌 ${deck.shortid.slice(0, 6)}`;
+      try {
+        const page = await getText(`/decks/${deck.shortid}/`, { timeoutMs: 12000 });
+        const title = decodeEntities((page.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '')
+          .replace(/\s*[-|]\s*HSReplay\.net\s*$/i, '');
+        return { ...deck, name: title || fallbackName };
+      } catch {
+        return { ...deck, name: fallbackName };
+      }
+    });
+    const byId = new Map(fixed.map((f) => [f.shortid, f]));
+    detailed = detailed.map((d) => byId.get(d.shortid) || d);
+  }
+  for (const d of detailed) d.cnName = deckCn(d.name);
+
+  // 合成成本：按普通卡计价，等价于 HSReplay 卡组页的「合成所需尘」
   for (const d of detailed) {
+    if (typeof dustOf === 'function') {
+      try { d.dust = Number(dustOf(d.deckList)) || 0; } catch { d.dust = 0; }
+    } else {
+      d.dust = 0;
+    }
+  }
+
+  // 分职业：每职业内部同名去重（留场数最多的那套），按胜率排，最多 3 套。
+  // 不过 minGames 门槛 —— 冷门职业本来场数就少，滤完就空了。
+  const byClass = {};
+  for (const d of detailed) {
+    if (!byClass[d.cls]) byClass[d.cls] = [];
+    byClass[d.cls].push(d);
+  }
+  for (const cls of Object.keys(byClass)) {
+    const list = dedupeByName(byClass[cls]);
+    // 场数太少的套牌胜率不可信（几十场的「最强」是噪声），优先给样本够的
+    const solid = list.filter((d) => d.games >= 100);
+    byClass[cls] = (solid.length >= 3 ? solid : [...solid, ...list.filter((d) => d.games < 100)]).slice(0, 3);
+  }
+
+  // Top N：跨职业，先按场数门槛筛，再同名去重
+  const eligible = minGames > 0 ? detailed.filter((d) => d.games >= minGames) : detailed;
+  const decks = dedupeByName(eligible).slice(0, Math.max(1, Math.min(20, count)));
+
+  return { decks, byClass, format, gameType, totalCandidates: eligible.length, minGames };
+}
+
+/** 同名归并：每个名字留场数最多的那套当代表（场数多 = 更主流，用户去 HSReplay 点开看到的
+ *  就是这一套，不会对不上）；不同名字的套数不够时，落选的同名套牌按胜率补在后面。 */
+function dedupeByName(list) {
+  const groups = new Map();
+  for (const d of list) {
     if (!groups.has(d.name)) groups.set(d.name, []);
     groups.get(d.name).push(d);
   }
   const byWr = (a, b) => b.winrate - a.winrate || b.games - a.games;
-  // 同一个套牌名（同一个 archetype）在 HSReplay 上常有多套不同构筑，胜率最高那套
-  // 往往是样本很小的小众改法。这里留「场数最多」的那套当代表：场数多 = 更主流，
-  // 用户去 HSReplay 点开同名套牌时看到的就是这一套，不会对不上。
   const reps = [...groups.values()].map((g) => g.slice().sort((a, b) => b.games - a.games)[0]);
   reps.sort(byWr);
-  // 不同名字的套数不够时，再把落选的同名套牌按胜率补进来
   const extra = [...groups.values()]
     .flatMap((g) => g.slice().filter((d) => !reps.includes(d)))
     .sort(byWr);
-  const decks = [...reps, ...extra].slice(0, Math.max(1, Math.min(20, count)));
-
-  return { decks, format, gameType, totalCandidates: uniq.length, minGames };
+  return [...reps, ...extra];
 }
 
 /** trending 接口把 deck_list 塞成了 JSON 字符串（"[[dbfId,count],...]"），这里统一解析成数组 */

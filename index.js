@@ -82,10 +82,15 @@ function buildDeckText(decks, { format, minGames, totalCandidates }) {
   lines.push(`🃏 今日炉石 · ${label}最强 ${decks.length} 套`);
   lines.push(`钻石到传说 · 候选 ${totalCandidates} 套 · 只留 ${nfmt(minGames)} 场以上`);
   lines.push('');
+  const seen = new Set();
   decks.forEach((d, i) => {
     const wr = Number(d.winrate).toFixed(1);
     // 有国服叫法就用中文，没有就留英文原名 —— 宁可不翻，也不瞎翻
-    const name = d.cnName || d.name;
+    const base = d.cnName || d.name;
+    // HSReplay 同一个 archetype 下有多份构筑样本，同名并列会让用户以为发重了，
+    // 第二套起标「变体」，场数照常显示，自己看样本量判断。
+    const name = seen.has(base) ? `${base}（变体）` : base;
+    seen.add(base);
     lines.push(`${i + 1}. ${d.cn} · ${name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);
   });
   lines.push('');
@@ -150,9 +155,13 @@ function buildClassText(hs, cls, decks, format) {
   lines.push(`🃏 ${cn} · ${label}推荐 ${decks.length} 套`);
   lines.push('钻石到传说 · 今日数据');
   lines.push('');
+  const seen = new Set();
   decks.forEach((d, i) => {
     const wr = Number(d.winrate).toFixed(1);
-    lines.push(`${i + 1}. ${d.cnName || d.name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);
+    const base = d.cnName || d.name;
+    const name = seen.has(base) ? `${base}（变体）` : base;
+    seen.add(base);
+    lines.push(`${i + 1}. ${name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);
   });
   lines.push('');
   lines.push(`要哪一套的卡组代码，回我「${short} 1」或套牌名就行。`);

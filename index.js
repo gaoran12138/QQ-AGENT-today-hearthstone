@@ -149,7 +149,9 @@ function dustSuffix(d) {
 /** 问某职业时发的那条：列该职业今日几套，不带代码 */
 function buildClassText(hs, cls, decks, format) {
   const label = FORMAT_CN[format] || format;
-  const cn = hs.CLASS_CN?.[cls] || cls;
+  // 展示用的职业名：死亡骑士国服都叫 DK，其余用中文全称。
+  // 不能直接改 CLASS_CN —— 导出格式里的「# 职业：死亡骑士」必须是游戏认得的全称。
+  const cn = cls === 'DEATHKNIGHT' ? 'DK' : (hs.CLASS_CN?.[cls] || cls);
   const short = hs.CLASS_SHORT?.[cls] || cn;
   const lines = [];
   lines.push(`🃏 ${cn} · ${label}推荐 ${decks.length} 套`);
@@ -158,7 +160,9 @@ function buildClassText(hs, cls, decks, format) {
   const seen = new Set();
   decks.forEach((d, i) => {
     const wr = Number(d.winrate).toFixed(1);
-    const base = d.cnName || d.name;
+    // 职业推荐里套牌名一律用 HSReplay 英文原名。中文对照表只覆盖了常见套牌，
+    // 新套路硬翻容易翻错，反倒不如原名好认；职业名照旧用中文。
+    const base = d.name;
     const name = seen.has(base) ? `${base}（变体）` : base;
     seen.add(base);
     lines.push(`${i + 1}. ${name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);

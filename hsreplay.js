@@ -187,6 +187,8 @@ export async function fetchTopDecks({ format = 'standard', count = 10, minGames 
         games,
         popularityDelta: Number(d.popularity_delta) || 0,
         archetypeId: d.archetype_id ?? null,
+        // 原始牌表 [[dbfId, 张数], ...]：导出「# 2x (3) 卡名」那种格式要用
+        deckList: parseDeckList(d.deck_list),
         avgMinutes: Math.round((Number(d.avg_game_length_seconds) || 0) / 6) / 10,
       });
     }
@@ -240,6 +242,18 @@ export async function fetchTopDecks({ format = 'standard', count = 10, minGames 
   const decks = [...reps, ...extra].slice(0, Math.max(1, Math.min(20, count)));
 
   return { decks, format, gameType, totalCandidates: uniq.length, minGames };
+}
+
+/** trending 接口把 deck_list 塞成了 JSON 字符串（"[[dbfId,count],...]"），这里统一解析成数组 */
+function parseDeckList(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== "string" || !raw.trim()) return [];
+  try {
+    const p = JSON.parse(raw);
+    return Array.isArray(p) ? p : [];
+  } catch {
+    return [];
+  }
 }
 
 async function mapLimit(items, limit, fn) {

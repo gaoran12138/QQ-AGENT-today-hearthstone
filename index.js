@@ -27,7 +27,8 @@ function deps() {
     depPromise = Promise.all([
       import(`./hsreplay.js?t=${t}`),
       import(`./render.js?t=${t}`),
-    ]).then(([hs, rd]) => ({ hs, rd }));
+      import(`./cards.js?t=${t}`),
+    ]).then(([hs, rd, cd]) => ({ hs, rd, cd }));
   }
   return depPromise;
 }
@@ -150,20 +151,56 @@ function matchDeck(decks, query) {
   );
 }
 
-/** 单套的代码消息：代码必须独占一行，QQ 长按复制才不会带上中文标点 */
-function buildCodeText(deck) {
+/** 单套牌导出成「仿游戏内导出」的文本 —— 自编格式，照抄炉石客户端导出的卡组文本，
+ *  只把套牌名换成中文。代码必须独占一行，QQ 长按复制才不会带上中文标点。
+ *
+ *  ### 动物园术
+ *  # 职业：术士
+ *  # 模式：标准模式
+ *  #
+ *  # 2x (0) 咒怨之墓
+ *  ...
+ *  #
+ *  AAECAf0G...
+ *  # 想要使用这副套牌，请先复制到剪贴板，再在游戏中创建新套牌。
+ *  # 套牌详情请查看https://hsreplay.net/decks/<shortid>/#gameType=RANKED_STANDARD
+ */
+export async function buildDeckExport({ hs, cd }, deck, format) {
+  const fmt = format === 'wild' ? 'wild' : 'standard';
+  const gameType = fmt === 'wild' ? 'RANKED_WILD' : 'RANKED_STANDARD';
   const lines = [];
-  const name = deck.cnName ? `${deck.cnName} · ${deck.name}` : deck.name;
-  lines.push(`🃏 ${name}`);
-  lines.push(`${deck.cn} · 胜率 ${Number(deck.winrate).toFixed(1)}% · ${nfmt(deck.games)} 场`);
-  lines.push('');
+
+  lines.push(`### ${deck.cnName || deck.name}`);
+  lines.push(`# 职业：${hs.CLASS_CN?.[deck.cls] || deck.cn || '未知'}`);
+  lines.push(`# 模式：${FORMAT_CN[fmt] || fmt}`);
+  lines.push('#');
+
+  const list = Array.isArray(deck.deckList) ? deck.deckList : [];
+  if (list.length) {
+    let db = null;
+    try {
+      db = await cd.loadCardDb();
+    } catch (e) {
+      log(`卡牌库加载失败，牌表用 dbfId 占位：${e?.message ?? e}`);
+    }
+    const rows = list.map(([dbfId, count]) => {
+      const info = db ? cd.cardInfo(db, dbfId) : null;
+      return { name: info?.name || `未知卡 ${dbfId}`, cost: info?.cost ?? 99, count: Number(count) || 1 };
+    });
+    // 官方导出顺序：费用升序，同费用按卡名（中文按码点）升序
+    rows.sort((a, b) => a.cost - b.cost || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const r of rows) lines.push(`# ${r.count}x (${r.cost}) ${r.name}`);
+    lines.push('#');
+  }
+
   if (deck.code) {
     lines.push(deck.code);
-    lines.push('');
-    lines.push('长按上面那行复制，粘进炉石就能导入。');
   } else {
-    lines.push('这套没抓到代码，可以去 HSReplay 按套牌名搜。');
+    lines.push('');
+    lines.push('（这套没抓到卡组代码，可以去 HSReplay 按套牌名搜）');
   }
+  lines.push('# 想要使用这副套牌，请先复制到剪贴板，再在游戏中创建新套牌。');
+  lines.push(`# 套牌详情请查看https://hsreplay.net/decks/${deck.shortid || ''}/#gameType=${gameType}`);
   return lines.join('\n');
 }
 
@@ -384,7 +421,7 @@ export function setup(api) {
   });
   api.registerTool({
     id: 'deck_code',
-    name: '发某套牌的卡组代码',
+    name: '发某套牌的卡组代码（游戏内导出格式）',
     description:
       '用户已经看过「今日炉石」的套牌清单，现在要其中某一套的卡组代码时调用。'
       + 'query 只填序号数字（如 "3"）或套牌名（如 "硬币贼"），不要填整句。'
@@ -431,7 +468,8 @@ export function setup(api) {
         };
       }
 
-      const text = buildCodeText(deck);
+      const { hs, cd } = await deps();
+      const text = await buildDeckExport({ hs, cd }, deck, last.format);
       try {
         if (typeof sender.sendMedia === 'function') {
           await sender.sendMedia(chatKey, [{ type: 'text', data: { text } }], { label: '今日炉石·卡组代码' });

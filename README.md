@@ -43,6 +43,7 @@
 ├── plugin.json
 ├── index.js
 ├── hsreplay.js
+├── cards.js
 ├── render.js
 └── README.md
 ```
@@ -100,6 +101,7 @@
 | `index.js` | 两个工具的实现、权限门（mentionOnly）、清单缓存、消息发送 |
 | `hsreplay.js` | 数据层：四个接口抓取、职业/套牌中文名、卡组代码提取 |
 | `render.js` | 卡片渲染：拼 HTML + Electron 离屏截图成 PNG |
+| `cards.js` | 中文卡牌库（dbfId → 中文名 + 费用），缓存 30 天；用于把套牌代码渲染成游戏内导出格式 |
 
 卡片图走 QQ Agent 既有的渲染管线：`BrowserWindow({ offscreen: true })` 加载临时 HTML → 量内容高度 → `capturePage().toPNG()`。渲染失败会自动退化成纯文字，消息不会整条失败。
 

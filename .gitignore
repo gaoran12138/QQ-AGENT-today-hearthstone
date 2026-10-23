@@ -1,0 +1,10 @@
+# 依赖（技能本身零依赖，运行在 QQ Agent 内置 Node 里）
+node_modules/
+
+# 运行时产物
+data/
+*.log
+
+# 系统
+.DS_Store
+Thumbs.db

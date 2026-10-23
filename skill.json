@@ -1,0 +1,136 @@
+{
+  "id": "today-hearthstone",
+  "name": "今日炉石",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "发今日炉石天梯情报：三张职业胜率榜图（标准 / 狂野 / 竞技场）+ 全职业范围胜率 Top10 套牌清单（套牌名、职业、胜率、场数）。清单只报名字不刷屏；用户问「第 N 套」或套牌名时，再由第二个工具单独回那一套的卡组代码。数据全部来自 HSReplay.net 的公开统计接口，标注样本场数，实时抓取不落库。只被 @ / 拍一拍 / 私聊时回复。",
+  "author": "为 QQ Agent 定制",
+  "entry": "index.js",
+  "enabledByDefault": true,
+  "capabilities": [],
+  "requires": [],
+  "_note_deps": [
+    "不需要额外装 Python、不需要代理：hsreplay.net 本机直连可达（实测 200，无 Cloudflare 挑战）。",
+    "数据源（全部为公开 JSON 接口，无需登录、无需 Premium）：",
+    "  套牌列表 GET /analytics/query/trending_decks_by_popularity/?GameType=RANKED_STANDARD&LeagueRankRange=DIAMOND_THROUGH_LEGEND&Region=ALL",
+    "  职业胜率 GET /analytics/query/player_class_performance_summary_v2/?LeagueRankRange=DIAMOND_THROUGH_LEGEND（返回 BGT_RANKED_STANDARD / BGT_RANKED_WILD 两套）",
+    "  竞技场   GET /api/v1/arena/classes_stats/（deck_class 1-10 与 14，14=恶魔猎手）",
+    "  卡组代码 GET /decks/{shortid}/ 的 SSR HTML 里直接内嵌 AAE... 代码 + <title> 套牌名，不需要自己实现 deckstring 编码器。",
+    "  ⚠️ /analytics/query/list_decks_by_win_rate_v2/ 任何 TimeRange 都要 Premium（403），不能用它排序，只能用 trending 接口。",
+    "  ⚠️ hsguru.com 在本机不可达（DNS 被污染成 173.234.53.168 + Cloudflare IP 直连 ECONNRESET），故不依赖它；标题里的 hsguru 套牌数据与 hsreplay 同源。",
+    "三张胜率图的卡片由 Electron 离屏截图渲染（与 weather-card 同一条验证过的管线），中文、按职业配色，不截原站。",
+    "图片段与文字段全部走 ctx.sender.sendMedia / sendTextBatch，不绕过限频与留档。"
+  ],
+  "settings": {
+    "enabled": true,
+    "mentionOnly": true,
+    "deckCount": 10,
+    "minGames": 800,
+    "format": "standard",
+    "sendCharts": true,
+    "sendDecks": true
+  },
+  "configSchema": {
+    "enabled": {
+      "type": "boolean",
+      "label": "启用今日炉石",
+      "description": "总开关。关掉后模型连工具都看不到。"
+    },
+    "mentionOnly": {
+      "type": "boolean",
+      "label": "群里只在被点名时给",
+      "description": "默认开。开着时群里必须 @ 机器人（或拍一拍它）才会发情报，普通聊天不会自己冒出来；私聊不受影响。"
+    },
+    "deckCount": {
+      "type": "number",
+      "label": "套牌发几套",
+      "description": "默认 10。范围 3~20。全职业范围内按胜率排序取前 N 套。"
+    },
+    "minGames": {
+      "type": "number",
+      "label": "样本场数下限",
+      "description": "默认 800。低于这个场数的套牌胜率很可能是噪声（几十场的 100% 胜率没有意义），会被过滤掉。调到 0 等于不过滤。"
+    },
+    "format": {
+      "type": "string",
+      "label": "默认模式",
+      "description": "standard（标准）或 wild（狂野）。默认 standard，对应 hsguru 的 format=2。"
+    },
+    "sendCharts": {
+      "type": "boolean",
+      "label": "发三张胜率图",
+      "description": "默认开。标准 / 狂野 / 竞技场三张职业胜率榜卡片图。"
+    },
+    "sendDecks": {
+      "type": "boolean",
+      "label": "发套牌清单",
+      "description": "默认开。Top10 套牌一行一套（名字 + 胜率 + 场数），不刷代码；用户问哪套再单独发那套的代码。"
+    }
+  },
+  "prompt": {
+    "sections": [
+      {
+        "id": "today-hearthstone-usage",
+        "title": "今日炉石",
+        "priority": 40,
+        "content": "有人问炉石今天环境 / 天梯什么卡组强 / 职业胜率时，调 `today-hearthstone__today`：它发三张职业胜率图 + 10 套牌清单（清单**只有名字和胜率，不含代码**）。\n\n用户看过清单后问「第 3 套的代码」「硬币贼代码」「给我那套动物园」时，调 `today-hearthstone__deck_code`，query 只填序号数字或套牌名，**不要填整句**。清单缓存 2 小时，过期或对不上会返回提示，按提示让用户重新要一次清单。\n\n【它自己发消息】两个工具都直接发出消息。调完**不要再调 send_message**、不要复述或改写内容，直接结束这一轮。\n\n【何时用】只有：私聊；或群里被 @ / 拍了拍且在问炉石。别人只是聊天就别用（工具会拒绝，别去碰）。\n\n【参数】today 的 count 默认按用户设置（10）；format 只在用户明确说\"狂野\"时传 wild。deck_code 的 query 只填数字或名字。\n\n【纪律】没被点名时当作没发生，别解释；工具报错（网络失败/无数据）时如实转达那一句，别说成\"今天没数据\"；胜率是实时统计，别当成长久结论。"
+      }
+    ]
+  },
+  "triggers": {
+    "when": "私聊里问到，或群里被 @ / 拍了拍之后问炉石今日环境、天梯强卡组、职业胜率；以及看过清单后要某一套的卡组代码",
+    "examples": [
+      "今天炉石什么卡组强",
+      "炉石职业胜率发一下",
+      "今日炉石",
+      "狂野胜率怎么样",
+      "@机器人 炉石今天环境",
+      "第 3 套的代码",
+      "硬币贼的代码发我"
+    ]
+  },
+  "_note_tools_is_metadata": "上游把 tools[] 当说明性元数据读，不会自动注册；真正的注册在 index.js 的 api.registerTool。id 写 'today' / 'deck_code'，上游自动加 'today-hearthstone__' 前缀 ⇒ 模型看到的是 today-hearthstone__today 与 today-hearthstone__deck_code。",
+  "tools": [
+    {
+      "id": "today",
+      "name": "发今日炉石情报",
+      "description": "抓 HSReplay 今日统计，发三张职业胜率榜卡片图（标准/狂野/竞技场）+ 全职业范围胜率 Top10 套牌清单（套牌名、职业、胜率、场数，**不含卡组代码**）。被问\"今天炉石什么卡组强/职业胜率/炉石环境\"时调用。⚠️ 这个工具**自己发消息**：调完不要再调 send_message，直接结束这一轮。返回第一行是 status：ok=已发出 / no-target=群里没被点名，不用回应 / error=失败。",
+      "category": "utility",
+      "icon": "🃏",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "要发几套牌，3~20，默认按用户设置（一般 10）。"
+          },
+          "format": {
+            "type": "string",
+            "description": "standard 或 wild。只有用户明确说\"狂野\"时才传 wild；不传则用用户设置里的默认模式。"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "id": "deck_code",
+      "name": "发某套牌的卡组代码",
+      "description": "用户已经看过「今日炉石」清单，现在要其中某一套的卡组代码时调用。query 只填序号数字（如 \"3\"）或套牌名（如 \"硬币贼\"），不要填整句。清单缓存 2 小时内有效。⚠️ 这个工具**自己发消息**：调完不要再调 send_message，直接结束这一轮。返回第一行 status：ok=已发出 / no-target=群里没被点名 / no-list=还没发过清单 / not-found=对不上 / error=失败。",
+      "category": "utility",
+      "icon": "📋",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "第几套（填数字，如 \"3\"）或套牌名（如 \"硬币贼\"）。"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ]
+}

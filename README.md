@@ -40,6 +40,7 @@
 ```
 <QQ Agent>/resources/app/skills/today-hearthstone/
 ├── skill.json
+├── plugin.json
 ├── index.js
 ├── hsreplay.js
 ├── render.js
@@ -95,6 +96,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `skill.json` | 清单：设置项、设置面板 schema、给模型的提示词、触发示例 |
+| `plugin.json` | 与 `skill.json` 逐字节相同。市场提交要求压缩包必须包含它；宿主加载时优先读 `skill.json`，两份并存不影响行为 |
 | `index.js` | 两个工具的实现、权限门（mentionOnly）、清单缓存、消息发送 |
 | `hsreplay.js` | 数据层：四个接口抓取、职业/套牌中文名、卡组代码提取 |
 | `render.js` | 卡片渲染：拼 HTML + Electron 离屏截图成 PNG |

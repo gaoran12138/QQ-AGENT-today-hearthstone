@@ -391,7 +391,7 @@ export const DECK_CN = {
   "C'Thun Demon Hunter": '克苏恩瞎',
   'Coin Rogue': '硬币贼',
   'Dragon Warrior': '龙战',
-  'Handbuff Death Knight': '手牌buff DK',
+  'Handbuff Death Knight': '污手DK',
   'Herald Shaman': '死亡萨',
   'Mug Shaman': '穆格萨',
   'Cannon Warrior': '海盗战',

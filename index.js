@@ -91,7 +91,9 @@ function buildDeckText(decks, { format, minGames, totalCandidates }) {
     // 第二套起标「变体」，场数照常显示，自己看样本量判断。
     const name = seen.has(base) ? `${base}（变体）` : base;
     seen.add(base);
-    lines.push(`${i + 1}. ${d.cn} · ${name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);
+    // 套牌名里已经带了职业（「克苏恩萨」的萨、「Zoo Warlock」的 Warlock），
+    // 前面再挂一个职业短称只是噪音。
+    lines.push(`${i + 1}. ${name} · 胜率 ${wr}% · ${nfmt(d.games)} 场${dustSuffix(d)}`);
   });
   lines.push('');
   lines.push('要哪一套的卡组代码，回我「第 3 套」或套牌名就行。');

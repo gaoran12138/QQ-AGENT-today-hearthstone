@@ -213,14 +213,14 @@ export async function fetchTopDecks({ format = 'standard', count = 10, minGames 
       const title = decodeEntities((page.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '')
         .replace(/\s*[-|]\s*HSReplay\.net\s*$/i, '');
       const code = (page.match(/AAE[A-Za-z0-9+/]{20,}={0,2}/) || [])[0] || '';
-      return { ...deck, name: title || fallbackName, cnName: deckCn(title || ''), code: code.replace(/={1,2}$/, '') };
+      return { ...deck, name: title || fallbackName, cnName: deckCn(title || ''), code };
     } catch {
       // 失败项给个带 shortid 的唯一名字：不进同名去重，否则所有失败项会被合并成一套
       return { ...deck, name: fallbackName, cnName: '', code: '' };
     }
   });
 
-  // 同名去重：先每个名字取最好的一套，再按胜率把第二好的补进来凑满 count。
+  // 同名归并：每个名字只留场数最多的一套当代表，不够数再按胜率补同名落选套牌。
   // 目的：避免 Top10 里塞进 3 套 C'Thun Demon Hunter 这种纯重复，信息密度太低。
   const groups = new Map();
   for (const d of detailed) {
@@ -228,9 +228,16 @@ export async function fetchTopDecks({ format = 'standard', count = 10, minGames 
     groups.get(d.name).push(d);
   }
   const byWr = (a, b) => b.winrate - a.winrate || b.games - a.games;
-  const best = [...groups.values()].map((g) => g[0]).sort(byWr);
-  const rest = [...groups.values()].flatMap((g) => g.slice(1)).sort(byWr);
-  const decks = [...best, ...rest].slice(0, Math.max(1, Math.min(20, count)));
+  // 同一个套牌名（同一个 archetype）在 HSReplay 上常有多套不同构筑，胜率最高那套
+  // 往往是样本很小的小众改法。这里留「场数最多」的那套当代表：场数多 = 更主流，
+  // 用户去 HSReplay 点开同名套牌时看到的就是这一套，不会对不上。
+  const reps = [...groups.values()].map((g) => g.slice().sort((a, b) => b.games - a.games)[0]);
+  reps.sort(byWr);
+  // 不同名字的套数不够时，再把落选的同名套牌按胜率补进来
+  const extra = [...groups.values()]
+    .flatMap((g) => g.slice().filter((d) => !reps.includes(d)))
+    .sort(byWr);
+  const decks = [...reps, ...extra].slice(0, Math.max(1, Math.min(20, count)));
 
   return { decks, format, gameType, totalCandidates: uniq.length, minGames };
 }

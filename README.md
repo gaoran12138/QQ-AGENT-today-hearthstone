@@ -44,9 +44,10 @@
 ├── skill.json
 ├── plugin.json
 ├── index.js
-├── hsreplay.js
-├── cards.js
-├── render.js
+├── lib/
+│   ├── hsreplay.js
+│   ├── cards.js
+│   └── render.js
 └── README.md
 ```
 
@@ -103,9 +104,9 @@
 | `skill.json` | 清单：设置项、设置面板 schema、给模型的提示词、触发示例 |
 | `plugin.json` | 与 `skill.json` 逐字节相同。市场提交要求压缩包必须包含它；宿主加载时优先读 `skill.json`，两份并存不影响行为 |
 | `index.js` | 两个工具的实现、权限门（mentionOnly）、清单缓存、消息发送 |
-| `hsreplay.js` | 数据层：四个接口抓取、职业/套牌中文名、卡组代码提取 |
-| `render.js` | 卡片渲染：拼 HTML + Electron 离屏截图成 PNG |
-| `cards.js` | 中文卡牌库（dbfId → 中文名 + 费用 + 稀有度），缓存 30 天；用于中文牌表与合成尘数 |
+| `lib/hsreplay.js` | 数据层：四个接口抓取、职业/套牌中文名、卡组代码提取 |
+| `lib/render.js` | 卡片渲染：拼 HTML + Electron 离屏截图成 PNG |
+| `lib/cards.js` | 中文卡牌库（dbfId → 中文名 + 费用 + 稀有度），缓存 30 天；用于中文牌表与合成尘数 |
 
 卡片图走 QQ Agent 既有的渲染管线：`BrowserWindow({ offscreen: true })` 加载临时 HTML → 量内容高度 → `capturePage().toPNG()`。渲染失败会自动退化成纯文字，消息不会整条失败。
 
@@ -120,7 +121,7 @@
 
 ## 维护注意
 
-- 改完 `hsreplay.js` / `render.js` 后必须 `POST /api/skills/reload`。这两个文件由 `index.js` 里的 `deps()` 用**动态 import + 时间戳**加载，不要改回静态 `import`：宿主 reload 时只给入口 `index.js` 加破缓存参数，静态 import 的依赖会命中 Node 的 ESM 模块缓存，改了也不生效（2026-10-23 踩过：改完中文名 reload 后消息里仍是旧英文）。
+- 改完 `lib/hsreplay.js` / `lib/render.js` 后必须 `POST /api/skills/reload`。这两个文件由 `index.js` 里的 `deps()` 用**动态 import + 时间戳**加载，不要改回静态 `import`：宿主 reload 时只给入口 `index.js` 加破缓存参数，静态 import 的依赖会命中 Node 的 ESM 模块缓存，改了也不生效（2026-10-23 踩过：改完中文名 reload 后消息里仍是旧英文）。
 - 套牌名的来源是 archetypes 接口（一次 776 条，约 10 秒），结果落在 `data/today-hearthstone-archetypes.json`，24 小时内不再请求。想强制刷新就删掉这个文件。
 - 单张尘数按官方分解规则：普 40 / 稀有 100 / 史诗 400 / 传说 1600，免费牌 0，写在 `cards.js` 的 `DUST_BY_RARITY`。
 - 套牌中文名在 `hsreplay.js` 的 `DECK_CN`，职业短称在 `CLASS_SHORT`。新扩展包上线出现新套牌时先显示英文原名，按 `'英文名': '中文名'` 加一行即可。

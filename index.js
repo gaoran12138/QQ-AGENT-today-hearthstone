@@ -25,9 +25,9 @@ function deps() {
   if (!depPromise) {
     const t = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     depPromise = Promise.all([
-      import(`./hsreplay.js?t=${t}`),
-      import(`./render.js?t=${t}`),
-      import(`./cards.js?t=${t}`),
+      import(`./lib/hsreplay.js?t=${t}`),
+      import(`./lib/render.js?t=${t}`),
+      import(`./lib/cards.js?t=${t}`),
     ]).then(([hs, rd, cd]) => ({ hs, rd, cd }));
   }
   return depPromise;
